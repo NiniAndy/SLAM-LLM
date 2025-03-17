@@ -18,12 +18,25 @@ class ModelConfig:
     encoder_projector: str = "linear"
     encoder_projector_ds_rate: int = 5
     modal: str = "audio"
-    normalize: Optional[bool] = field(default=False, metadata={
-        "help": "whether input is normalized, used for models such as wavlm"
-    })
-    encoder_type: str = field(default="finetune", metadata={
-        "help": "whether model is only pretrained or finetuned, used for models such as hubert"
-    })
+    normalize: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help":
+            "whether input is normalized, used for models such as wavlm"
+        })
+    encoder_type: str = field(
+        default="finetune",
+        metadata={
+            "help":
+            "whether model is only pretrained or finetuned, used for models such as hubert"
+        })
+    whisper_decode: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help":
+            "whether use whisper decode, used for models such as hubert"
+        })
+    encoder_path_hf: Optional[str] = None
 
 @dataclass
 class PeftConfig:
@@ -45,9 +58,7 @@ class TrainConfig:
     low_cpu_fsdp:bool = False
     run_validation:bool = True
     batch_size_training:int = 4
-    batching_strategy:str = field(default="packing", metadata={
-        "help":"alternative: padding"
-    }) #
+    batching_strategy:str = field(default="packing", metadata={"help":"alternative: padding"}) #
     context_length:int = 4096
     gradient_accumulation_steps:int = 1
     num_epochs:int = 3
@@ -122,9 +133,9 @@ class FSDPConfig:
 @dataclass
 class LogConfig:
     use_wandb: bool = False
-    wandb_dir: str = "/root/test_wandb"
+    wandb_dir: str = "/ssd/zhuang/code/SLAM-LLM/examples/asr_librispeech/test_wandb"
     wandb_entity_name: str = "project_name"
     wandb_project_name: str = "project_name"
     wandb_exp_name: str = "exp_name"
-    log_file: str = "/root/test.log"
+    log_file: str = "/ssd/zhuang/code/SLAM-LLM/examples/asr_librispeech/test.log"
     log_interval: int = 5

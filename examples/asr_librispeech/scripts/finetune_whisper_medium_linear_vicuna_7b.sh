@@ -2,7 +2,7 @@
 root=/ssd/zhuang/code
 # export PYTHONPATH=/root/whisper:$PYTHONPATH
 export PYTHONPATH=$root/fairseq:$PYTHONPATH
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 export TOKENIZERS_PARALLELISM=false
 # export CUDA_LAUNCH_BLOCKING=1
 export OMP_NUM_THREADS=1
@@ -15,18 +15,20 @@ export OMP_NUM_THREADS=1
 run_dir=$root/SLAM-LLM
 cd $run_dir
 code_dir=examples/asr_librispeech
-project_dir=$root/$code_dir
+project_dir=$run_dir/$code_dir
+echo "Project dir: $project_dir"
+export TORCH_ELASTIC_ERROR_FILE=$project_dir/torch_error.log
 
 
-
-speech_encoder_path=/ssd/zhuang/code/LLM/whisper/large-v3.pt
-llm_path=/ssd/zhuang/code/LLM/vicuna-7b-v.15/
+speech_encoder_path=/ssd/zhuang/code/LLM/whisper/medium.pt
+llm_path=/ssd/zhuang/code/LLM/vicuna-7b-v.15
 train_data_path=/ssd/zhuang/code/FunASR/examples/librispeech/DATA/data/train_960/audio_datasets.jsonl
-val_data_path=/ssd/zhuang/code/FunASR/examples/librispeech/DATA/data/dev/audio_datasets.jsonl
+val_data_path=/ssd/zhuang/code/FunASR/examples/librispeech/DATA/data/dev_clean/audio_datasets.jsonl
 
 output_dir=$project_dir/exp
 mkdir -p "${output_dir}"
-output_dir=$output_dir/vicuna-7b-v1.5-librispeech-linear-steplrwarmupkeep1e-4-whisper-largev3-$(date +"%Y%m%d")
+output_dir=$output_dir/vicuna-7b-v1.5-librispeech-linear-steplrwarmupkeep1e-4-whisper-medium-$(date +"%Y%m%d")
+echo "Save path: $output_dir"
 
 hydra_args="
 hydra.run.dir=$output_dir \
@@ -36,24 +38,25 @@ hydra.run.dir=$output_dir \
 ++model_config.encoder_name=whisper \
 ++model_config.encoder_projector_ds_rate=5 \
 ++model_config.encoder_path=$speech_encoder_path \
-++model_config.encoder_dim=1280 \
+++model_config.encoder_dim=1024 \
 ++model_config.encoder_projector=linear \
 ++dataset_config.dataset=speech_dataset \
 ++dataset_config.train_data_path=$train_data_path \
 ++dataset_config.val_data_path=$val_data_path \
 ++dataset_config.input_type=mel \
-++dataset_config.mel_size=128 \
+++dataset_config.mel_size=80 \
 ++train_config.model_name=asr \
 ++train_config.num_epochs=5 \
 ++train_config.freeze_encoder=true \
 ++train_config.freeze_llm=true \
 ++train_config.batching_strategy=custom \
-++train_config.warmup_steps=1500 \
+++train_config.warmup_steps=1000 \
 ++train_config.total_steps=150000 \
 ++train_config.lr=1e-4 \
 ++train_config.validation_interval=1000 \
-++train_config.batch_size_training=2 \
-++train_config.val_batch_size=2 \
+++train_config.batch_size_training=1 \
+++train_config.val_batch_size=1 \
+++train_config.gradient_accumulation_steps=4 \
 ++train_config.num_workers_dataloader=4 \
 ++train_config.output_dir=$output_dir \
 ++metric=acc \
@@ -68,7 +71,7 @@ if [[ $CUDA_VISIBLE_DEVICES != *","* ]]; then
 else
     torchrun \
         --nnodes 1 \
-        --nproc_per_node 2 \
+        --nproc_per_node 4 \
         --master_port=29503 \
         $code_dir/finetune_asr.py \
         --config-path "conf" \

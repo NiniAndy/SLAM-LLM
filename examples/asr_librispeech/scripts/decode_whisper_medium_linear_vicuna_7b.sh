@@ -31,12 +31,12 @@ python $code_dir/inference_asr_batch.py \
         ++model_config.encoder_name=whisper \
         ++model_config.encoder_projector_ds_rate=5 \
         ++model_config.encoder_path=$speech_encoder_path \
-        ++model_config.encoder_dim=1280 \
+        ++model_config.encoder_dim=1024 \
         ++model_config.encoder_projector=linear \
         ++dataset_config.dataset=speech_dataset \
         ++dataset_config.val_data_path=$val_data_path \
         ++dataset_config.input_type=mel \
-        ++dataset_config.mel_size=128 \
+        ++dataset_config.mel_size=80 \
         ++dataset_config.inference_mode=true \
         ++train_config.model_name=asr \
         ++train_config.freeze_encoder=true \
