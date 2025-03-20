@@ -27,7 +27,7 @@ val_data_path=/ssd/zhuang/code/FunASR/examples/librispeech/DATA/data/dev_clean/a
 
 output_dir=$project_dir/exp
 mkdir -p "${output_dir}"
-output_dir=$output_dir/vicuna-7b-v1.5-librispeech-linear-steplrwarmupkeep1e-4-whisper-medium-$(date +"%Y%m%d")
+output_dir=$output_dir/whisper-medium-linear-vicuna-7b-v1_5-ls960-$(date +"%Y%m%d")
 echo "Save path: $output_dir"
 
 hydra_args="
@@ -53,12 +53,14 @@ hydra.run.dir=$output_dir \
 ++train_config.warmup_steps=1000 \
 ++train_config.total_steps=150000 \
 ++train_config.lr=1e-4 \
-++train_config.validation_interval=1000 \
+++train_config.validation_interval=4000 \
 ++train_config.batch_size_training=1 \
 ++train_config.val_batch_size=1 \
 ++train_config.gradient_accumulation_steps=4 \
 ++train_config.num_workers_dataloader=4 \
 ++train_config.output_dir=$output_dir \
+++log_config.log_file=$output_dir/log.txt \
+++log_config.log_interval=500 \
 ++metric=acc \
 "
 

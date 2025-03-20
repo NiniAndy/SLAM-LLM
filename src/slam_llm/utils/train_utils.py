@@ -17,12 +17,12 @@ from torch.distributed.fsdp import StateDictType
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from tqdm import tqdm
 from transformers import LlamaTokenizer
-
+from tensorboardX import SummaryWriter
 
 from slam_llm.utils.checkpoint_handler import (
-    save_model_checkpoint, 
-    save_model_and_optimizer_sharded, 
-    save_optimizer_checkpoint, 
+    save_model_checkpoint,
+    save_model_and_optimizer_sharded,
+    save_optimizer_checkpoint,
     save_model_checkpoint_peft,
     save_model_checkpoint_peft_full_shard
 )
@@ -43,7 +43,19 @@ def set_tokenizer_params(tokenizer: LlamaTokenizer):
 def byte2mb(x):
     return int(x / 2**20)
 
-def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, log_config, fsdp_config=None, local_rank=None, rank=None):
+
+def train(model,
+          train_dataloader,
+          eval_dataloader,
+          tokenizer,
+          optimizer,
+          lr_scheduler,
+          gradient_accumulation_steps,
+          train_config,
+          log_config,
+          fsdp_config=None,
+          local_rank=None,
+          rank=None):
     """
     Trains the model on the given dataloader
 
@@ -67,6 +79,7 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
     #     scaler = ShardedGradScaler()
     # elif train_config.use_fp16 and not train_config.enable_fsdp:
     #     scaler = torch.cuda.amp.GradScaler()
+    step_num = 0
     if train_config.use_fp16:
         scaler = torch.cuda.amp.GradScaler()
         if train_config.enable_fsdp:
@@ -74,17 +87,24 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
     if train_config.enable_fsdp or train_config.enable_ddp:
         world_size = int(os.environ["WORLD_SIZE"])
     autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext
-    
+
+    log_file = log_config.log_file
+    tensorboard_dir = os.path.join(log_file.split('.')[0], "tensorboard")
+    os.makedirs(tensorboard_dir, exist_ok=True)
+    writer = SummaryWriter(tensorboard_dir)
+
     train_prep = []
     train_loss = []
     train_acc = []
     val_prep = []
-    val_loss =[]
+    val_loss = []
     val_acc = []
     epoch_times = []
     checkpoint_times = []
     results = {}
     best_val_loss = float("inf")
+    filename=None
+    current_lr = lr_scheduler.get_last_lr()[0]
     best_val_acc = 0.0
     for epoch in range(train_config.num_epochs):
         epoch_start_time = time.perf_counter()
@@ -92,20 +112,32 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
             model.train()
             total_loss = 0.0
             total_acc = 0.0
-            total_length = len(train_dataloader)//gradient_accumulation_steps
-            pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
+            total_length = len(train_dataloader) // gradient_accumulation_steps
+            pbar = tqdm(colour="blue",
+                        desc=f"Training Epoch: {epoch+1}",
+                        total=total_length,
+                        dynamic_ncols=True)
             for step, batch in enumerate(train_dataloader):
+                step_num += 1
                 for key in batch.keys():
                     if train_config.enable_fsdp or train_config.enable_ddp:
-                        batch[key] = batch[key].to(local_rank) if isinstance(batch[key], torch.Tensor) else batch[key]
+                        batch[key] = batch[key].to(local_rank) if isinstance(
+                            batch[key], torch.Tensor) else batch[key]
                         if isinstance(batch[key], dict):
                             for k2 in batch[key].keys():
-                                batch[key][k2] = batch[key][k2].to(local_rank) if isinstance(batch[key][k2], torch.Tensor) else batch[key][k2]
+                                batch[key][k2] = batch[key][k2].to(
+                                    local_rank) if isinstance(
+                                        batch[key][k2],
+                                        torch.Tensor) else batch[key][k2]
                     else:
-                        batch[key] = batch[key].to('cuda:0') if isinstance(batch[key], torch.Tensor) else batch[key]
+                        batch[key] = batch[key].to('cuda:0') if isinstance(
+                            batch[key], torch.Tensor) else batch[key]
                         if isinstance(batch[key], dict):
                             for k2 in batch[key].keys():
-                                batch[key][k2] = batch[key][k2].to('cuda:0') if isinstance(batch[key][k2], torch.Tensor) else batch[key][k2]
+                                batch[key][k2] = batch[key][k2].to(
+                                    'cuda:0') if isinstance(
+                                        batch[key][k2],
+                                        torch.Tensor) else batch[key][k2]
                 with autocast():
                     outputs, *rest = model(**batch)
                 acc = rest[0] if rest else -1
@@ -116,13 +148,24 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
 
                 if log_config.use_wandb and step % log_config.log_interval == 0:
                     if train_config.enable_fsdp or train_config.enable_ddp:
-                        if rank==0:
-                            wandb.log({"train_inner/train_inner_loss":loss, "train_inner/train_inner_accuracy":acc}, step=(epoch * total_length + step))
+                        if rank == 0:
+                            wandb.log(
+                                {
+                                    "train_inner/train_inner_loss": loss,
+                                    "train_inner/train_inner_accuracy": acc
+                                },
+                                step=(epoch * total_length + step))
                     else:
-                        wandb.log({"train_inner/train_inner_loss":loss, "train_inner/train_inner_accuracy":acc}, step=(epoch * total_length + step))
-                    
+                        wandb.log(
+                            {
+                                "train_inner/train_inner_loss": loss,
+                                "train_inner/train_inner_accuracy": acc
+                            },
+                            step=(epoch * total_length + step))
+
                 total_loss += loss.detach().float()
                 total_acc += acc
+
                 if train_config.use_fp16:
                     # if fp16 is enabled, use gradient scaler to handle gradient update
                     scaler.scale(loss).backward()
@@ -138,10 +181,13 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                             break
                         if log_config.use_wandb and step % log_config.log_interval == 0:
                             if train_config.enable_fsdp or train_config.enable_ddp:
-                                if rank==0:
-                                    wandb.log({"train_inner/lr":current_lr}, step=(epoch * total_length + step))
+                                if rank == 0:
+                                    wandb.log({"train_inner/lr": current_lr},
+                                              step=(epoch * total_length +
+                                                    step))
                             else:
-                                wandb.log({"train_inner/lr":current_lr}, step=(epoch * total_length + step))
+                                wandb.log({"train_inner/lr": current_lr},
+                                          step=(epoch * total_length + step))
                         optimizer.zero_grad()
                         pbar.update(1)
                 else:
@@ -158,166 +204,219 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                             break
                         if log_config.use_wandb and step % log_config.log_interval == 0:
                             if train_config.enable_fsdp or train_config.enable_ddp:
-                                if rank==0:
-                                    wandb.log({"train_inner/lr":current_lr}, step=(epoch * total_length + step))
+                                if rank == 0:
+                                    wandb.log({"train_inner/lr": current_lr}, step=(epoch * total_length +step))
                             else:
-                                wandb.log({"train_inner/lr":current_lr}, step=(epoch * total_length + step))
+                                wandb.log({"train_inner/lr": current_lr}, step=(epoch * total_length + step))
                         optimizer.zero_grad()
                         pbar.update(1)
 
+                device = next(model.parameters()).device
+                if device.type == "cuda":
+                    with torch.cuda.device(device):
+                        torch.cuda.empty_cache()
+                        if rank == 0:
+                            logger.info(f"Clearing GPU cache for all ranks")
+
                 pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()}, acc: {acc})")
-                
-                if (epoch * total_length + step + 1) % train_config.validation_interval == 0 and train_config.run_validation:
-                    eval_ppl, eval_epoch_loss, *rest = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer)
+
+                log_description(
+                    log_config,
+                    train_config,
+                    epoch=epoch + 1,
+                    step=step,
+                    dataloader_len=len(train_dataloader),
+                    step_num=step_num,
+                    lr=current_lr,
+                    loss=loss.detach().float(),
+                    acc=acc,
+                    writer=writer,
+                    tag="train",
+                    log_step=None,
+                )
+
+                # dev purposes
+                if (epoch * total_length + step + 1 ) % train_config.validation_interval == 0 and train_config.run_validation:
+                    eval_ppl, eval_epoch_loss, *rest = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, log_config, epoch, step_num, writer)
                     eval_epoch_acc = rest[0] if rest else -1
                     checkpoint_start_time = time.perf_counter()
                     if train_config.save_model and (eval_epoch_loss < best_val_loss):
+                        # 删除之前的checkpoint
+                        if filename is not None:
+                            logger.info(f"Deleting the previous checkpoint {filename}")
+                            os.remove(filename)
+
                         checkpoint_name = f"{train_config.model_name}_epoch_{str(epoch+1)}_step_{step+1}"
                         if train_config.enable_fsdp or train_config.enable_ddp:
                             dist.barrier()
+
+                        # save the model lora checkpoint
                         if train_config.use_peft:
                             if train_config.enable_fsdp or train_config.enable_ddp:
-                                if rank==0:
-                                    logger.info(f"we are about to save the PEFT modules")
+                                if rank == 0:
+                                    logger.info( f"we are about to save the PEFT modules")
                             else:
                                 logger.info(f"we are about to save the PEFT modules")
+
                             if train_config.enable_fsdp:
                                 if fsdp_config.sharding_strategy == ShardingStrategy.FULL_SHARD:
-                                    save_model_checkpoint_peft_full_shard(
-                                            model, optimizer, rank, train_config, epoch=epoch
-                                        )
+                                    filename = save_model_checkpoint_peft_full_shard(model, optimizer, rank, train_config, epoch=epoch)
                                 elif fsdp_config.sharding_strategy == ShardingStrategy.NO_SHARD:
-                                    if rank==0:
-                                        save_model_checkpoint_peft(
-                                            model, optimizer, rank, train_config, checkpoint_name=checkpoint_name
-                                        )
+                                    if rank == 0:
+                                        filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
                                     dist.barrier()
                             elif train_config.enable_ddp:
-                                if rank==0:
-                                    save_model_checkpoint_peft(
-                                            model, optimizer, rank, train_config, checkpoint_name=checkpoint_name
-                                        )
+                                if rank == 0:
+                                    filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
                                 dist.barrier()
                             else:
                                 # model.save_pretrained(train_config.output_dir)
-                                save_model_checkpoint_peft(
-                                        model, optimizer, rank, train_config, checkpoint_name=checkpoint_name
-                                    )
+                                filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
+                                
                             if train_config.enable_fsdp or train_config.enable_ddp:
-                                if rank==0:
+                                if rank == 0:
                                     logger.info(f"PEFT modules are saved in {train_config.output_dir} directory")
                             else:
                                 logger.info(f"PEFT modules are saved in {train_config.output_dir} directory")
-                        
+
+
+                        # save trainable model checkpoint
                         elif not train_config.use_peft and train_config.freeze_llm:
                             logger.info(f"llm is frozen, we are about to save other parts.")
                             if train_config.enable_fsdp:
                                 if fsdp_config.sharding_strategy == ShardingStrategy.FULL_SHARD:
-                                    save_model_checkpoint_peft_full_shard(
-                                            model, optimizer, rank, train_config, epoch=epoch
-                                        )
+                                    filename = save_model_checkpoint_peft_full_shard(model, optimizer, rank, train_config, epoch=epoch)
                                 elif fsdp_config.sharding_strategy == ShardingStrategy.NO_SHARD:
-                                    if rank==0:
-                                        save_model_checkpoint_peft(
-                                            model, optimizer, rank, train_config, checkpoint_name=checkpoint_name
-                                        )
+                                    if rank == 0:
+                                        filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
                                     dist.barrier()
                             elif train_config.enable_ddp:
-                                if rank==0:
-                                    save_model_checkpoint_peft(
-                                            model, optimizer, rank, train_config, checkpoint_name=checkpoint_name
-                                        )
+                                if rank == 0:
+                                    filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
                                 dist.barrier()
                             else:
-                                save_model_checkpoint_peft(
-                                        model, optimizer, rank, train_config, checkpoint_name=checkpoint_name
-                                    )
+                                filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
 
+
+                        # save entire model checkpoint
                         else:
                             if train_config.enable_fsdp:
-                                if getattr(StateDictType, fsdp_config.checkpoint_type) == StateDictType.FULL_STATE_DICT:
-                                    save_model_checkpoint(
-                                        model, optimizer, rank, train_config, epoch=epoch
-                                    )
-                                elif getattr(StateDictType, fsdp_config.checkpoint_type) == StateDictType.SHARDED_STATE_DICT:
-                                    logger.info(" Saving the FSDP model checkpoints using SHARDED_STATE_DICT")
-                                    logger.info("=====================================================")
+                                if getattr(StateDictType, fsdp_config.checkpoint_type ) == StateDictType.FULL_STATE_DICT:
+                                    save_model_checkpoint(model, optimizer, rank, train_config, epoch=epoch)
 
+                                elif getattr(StateDictType, fsdp_config.checkpoint_type) == StateDictType.SHARDED_STATE_DICT:
                                     save_model_and_optimizer_sharded(model, rank, train_config)
+                                    logger.info( " Saving the FSDP model checkpoints using SHARDED_STATE_DICT")
+                                    logger.info("=====================================================")
+                                    
+
                                     if train_config.save_optimizer:
                                         save_model_and_optimizer_sharded(model, rank, train_config, optim=optimizer)
                                         logger.info(" Saving the FSDP model checkpoints and optimizer using SHARDED_STATE_DICT")
                                         logger.info("=====================================================")
 
                                 if train_config.save_optimizer:
-                                    save_optimizer_checkpoint(
-                                        model, optimizer, rank, train_config, epoch=epoch
-                                    )
-                                    logger.info(" Saving the FSDP model checkpoints and optimizer using FULL_STATE_DICT")
+                                    save_optimizer_checkpoint(model, optimizer, rank, train_config, epoch=epoch_end_time)
+                                    logger.info( " Saving the FSDP model checkpoints and optimizer using FULL_STATE_DICT")
                                     logger.info("=====================================================")
 
                             elif train_config.enable_ddp:
-                                if rank==0:
-                                    save_model_checkpoint_peft(
-                                            model, optimizer, rank, train_config, checkpoint_name=checkpoint_name
-                                        )
+                                if rank == 0:
+                                    filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
                                 dist.barrier()
-                                    
+
                             else:
-                                save_model_checkpoint_peft(
-                                        model, optimizer, rank, train_config, checkpoint_name=checkpoint_name
-                                    )
-                                
+                                filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
+
                         if train_config.enable_fsdp or train_config.enable_ddp:
                             dist.barrier()
+
+
+                        logging.info(f'Checkpoint saved to {filename}')
+
+
                     checkpoint_end_time = time.perf_counter() - checkpoint_start_time
                     checkpoint_times.append(checkpoint_end_time)
                     if eval_epoch_loss < best_val_loss:
                         best_val_loss = eval_epoch_loss
                         if train_config.enable_fsdp or train_config.enable_ddp:
-                            if rank==0:
-                                logger.info(f"best eval loss on epoch {epoch+1} is {best_val_loss}")
+                            if rank == 0:
+                                logger.info(f"best eval loss on epoch {epoch+1} is {best_val_loss} save as {filename}")
                         else:
-                            logger.info(f"best eval loss on epoch {epoch+1} is {best_val_loss}")
+                            logger.info(f"best eval loss on epoch {epoch+1} is {best_val_loss} save as {filename}")
+
                     val_loss.append(eval_epoch_loss)
                     val_prep.append(eval_ppl)
                     if rest:
                         if eval_epoch_acc > best_val_acc:
                             best_val_acc = eval_epoch_acc
                             if train_config.enable_fsdp or train_config.enable_ddp:
-                                if rank==0:
+                                if rank == 0:
                                     logger.info(f"best eval acc on epoch {epoch+1} is {best_val_acc}")
                             else:
                                 logger.info(f"best eval acc on epoch {epoch+1} is {best_val_acc}")
-                        val_acc.append(rest[0]) 
-                    else: 
+                        val_acc.append(rest[0])
+                    else:
                         val_acc.append(-1)
-                    
+
                     if log_config.use_wandb:
                         if train_config.enable_fsdp or train_config.enable_ddp:
-                            if rank==0:
-                                wandb.log({"valid/val_epoch_loss":eval_epoch_loss, "valid/val_perplexity":eval_ppl, "valid/best_val_loss":best_val_loss, "valid/val_accuracy":val_acc[-1], "valid/val_best_accuracy":best_val_acc})
+                            if rank == 0:
+                                wandb.log({
+                                    "valid/val_epoch_loss":
+                                    eval_epoch_loss,
+                                    "valid/val_perplexity":
+                                    eval_ppl,
+                                    "valid/best_val_loss":
+                                    best_val_loss,
+                                    "valid/val_accuracy":
+                                    val_acc[-1],
+                                    "valid/val_best_accuracy":
+                                    best_val_acc
+                                })
                         else:
-                            wandb.log({"valid/val_epoch_loss":eval_epoch_loss, "valid/val_perplexity":eval_ppl, "valid/best_val_loss":best_val_loss, "valid/val_accuracy":val_acc[-1], "valid/val_best_accuracy":best_val_acc})
+                            wandb.log({
+                                "valid/val_epoch_loss": eval_epoch_loss,
+                                "valid/val_perplexity": eval_ppl,
+                                "valid/best_val_loss": best_val_loss,
+                                "valid/val_accuracy": val_acc[-1],
+                                "valid/val_best_accuracy": best_val_acc
+                            })
 
                 if train_config.run_test_during_validation:
                     if train_config.enable_fsdp or train_config.enable_ddp:
-                        if rank==0:
-                            logger.info("=====================================")
-                            logger.info(f"Test the file {train_config.run_test_during_validation_file} during validation:")
+                        if rank == 0:
+                            logger.info(
+                                "=====================================")
+                            logger.info(
+                                f"Test the file {train_config.run_test_during_validation_file} during validation:"
+                            )
                             with autocast():
-                                logger.info(model.inference(train_config.run_test_during_validation_file, train_config.run_test_during_validation_prompt))
-                            logger.info("=====================================")
+                                logger.info(
+                                    model.inference(
+                                        train_config.
+                                        run_test_during_validation_file,
+                                        train_config.
+                                        run_test_during_validation_prompt))
+                            logger.info(
+                                "=====================================")
                         dist.barrier()
                     else:
                         logger.info("=====================================")
-                        logger.info(f"Test the file {train_config.run_test_during_validation_file} during validation:")
+                        logger.info(
+                            f"Test the file {train_config.run_test_during_validation_file} during validation:"
+                        )
                         with autocast():
-                            logger.info(model.inference(train_config.run_test_during_validation_file, train_config.run_test_during_validation_prompt))
+                            logger.info(
+                                model.inference(
+                                    train_config.
+                                    run_test_during_validation_file,
+                                    train_config.
+                                    run_test_during_validation_prompt))
                         logger.info("=====================================")
             pbar.close()
 
-        epoch_end_time = time.perf_counter()-epoch_start_time
+        epoch_end_time = time.perf_counter() - epoch_start_time
         epoch_times.append(epoch_end_time)
         # Reducing total_loss across all devices if there's more than one CUDA device
         if torch.cuda.device_count() > 1 and (train_config.enable_fsdp or train_config.enable_ddp):
@@ -326,8 +425,8 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
         train_epoch_loss = total_loss / len(train_dataloader)
         train_epoch_acc = total_acc / len(train_dataloader)
         if train_config.enable_fsdp or train_config.enable_ddp:
-            train_epoch_loss = train_epoch_loss/world_size
-            train_epoch_acc = train_epoch_acc/world_size
+            train_epoch_loss = train_epoch_loss / world_size
+            train_epoch_acc = train_epoch_acc / world_size
         train_perplexity = torch.exp(train_epoch_loss)
 
         train_prep.append(train_perplexity)
@@ -336,43 +435,66 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
 
         if log_config.use_wandb:
             if train_config.enable_fsdp or train_config.enable_ddp:
-                if rank==0:
-                    wandb.log({"train/train_perplexity":train_perplexity, "train/train_epoch_loss":train_epoch_loss, "train/train_epoch_acc":train_epoch_acc})
+                if rank == 0:
+                    wandb.log({
+                        "train/train_perplexity": train_perplexity,
+                        "train/train_epoch_loss": train_epoch_loss,
+                        "train/train_epoch_acc": train_epoch_acc
+                    })
             else:
-                wandb.log({"train/train_perplexity":train_perplexity, "train/train_epoch_loss":train_epoch_loss, "train/train_epoch_acc":train_epoch_acc})
+                wandb.log({
+                    "train/train_perplexity": train_perplexity,
+                    "train/train_epoch_loss": train_epoch_loss,
+                    "train/train_epoch_acc": train_epoch_acc
+                })
 
         if train_config.enable_fsdp or train_config.enable_ddp:
-            if rank==0:
-                logger.info(f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s")
+            if rank == 0:
+                logger.info(
+                    f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s"
+                )
         else:
             logger.info(f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s")
 
         if train_config.enable_fsdp:
-            if rank==0:
-                logger.info(f"Max CUDA memory allocated was {memtrace.peak} GB")
-                logger.info(f"Max CUDA memory reserved was {memtrace.max_reserved} GB")
-                logger.info(f"Peak active CUDA memory was {memtrace.peak_active_gb} GB")
-                logger.info(f"Cuda Malloc retires : {memtrace.cuda_malloc_retires}")
-                logger.info(f"CPU Total Peak Memory consumed during the train (max): {memtrace.cpu_peaked + memtrace.cpu_begin} GB")
+            if rank == 0:
+                logger.info(
+                    f"Max CUDA memory allocated was {memtrace.peak} GB")
+                logger.info(
+                    f"Max CUDA memory reserved was {memtrace.max_reserved} GB")
+                logger.info(
+                    f"Peak active CUDA memory was {memtrace.peak_active_gb} GB"
+                )
+                logger.info(
+                    f"Cuda Malloc retires : {memtrace.cuda_malloc_retires}")
+                logger.info(
+                    f"CPU Total Peak Memory consumed during the train (max): {memtrace.cpu_peaked + memtrace.cpu_begin} GB"
+                )
         else:
             logger.info(f"Max CUDA memory allocated was {memtrace.peak} GB")
-            logger.info(f"Max CUDA memory reserved was {memtrace.max_reserved} GB")
-            logger.info(f"Peak active CUDA memory was {memtrace.peak_active_gb} GB")
-            logger.info(f"Cuda Malloc retires : {memtrace.cuda_malloc_retires}")
-            logger.info(f"CPU Total Peak Memory consumed during the train (max): {memtrace.cpu_peaked + memtrace.cpu_begin} GB")
+            logger.info(
+                f"Max CUDA memory reserved was {memtrace.max_reserved} GB")
+            logger.info(
+                f"Peak active CUDA memory was {memtrace.peak_active_gb} GB")
+            logger.info(
+                f"Cuda Malloc retires : {memtrace.cuda_malloc_retires}")
+            logger.info(
+                f"CPU Total Peak Memory consumed during the train (max): {memtrace.cpu_peaked + memtrace.cpu_begin} GB"
+            )
 
         # Update the learning rate as needed
         # lr_scheduler.step()
 
-    avg_epoch_time = sum(epoch_times)/ len(epoch_times)
-    avg_checkpoint_time = sum(checkpoint_times)/ len(checkpoint_times) if len(checkpoint_times) > 0 else 0
-    avg_train_prep = sum(train_prep)/len(train_prep)
-    avg_train_loss = sum(train_loss)/len(train_loss)
-    avg_train_acc = sum(train_acc)/len(train_acc)
+    avg_epoch_time = sum(epoch_times) / len(epoch_times)
+    avg_checkpoint_time = sum(checkpoint_times) / len(checkpoint_times) if len(
+        checkpoint_times) > 0 else 0
+    avg_train_prep = sum(train_prep) / len(train_prep)
+    avg_train_loss = sum(train_loss) / len(train_loss)
+    avg_train_acc = sum(train_acc) / len(train_acc)
     if train_config.run_validation:
-        avg_eval_prep = sum(val_prep)/len(val_prep)
-        avg_eval_loss = sum(val_loss)/len(val_loss)
-        avg_eval_acc = sum(val_acc)/len(val_acc)
+        avg_eval_prep = sum(val_prep) / len(val_prep)
+        avg_eval_loss = sum(val_loss) / len(val_loss)
+        avg_eval_acc = sum(val_acc) / len(val_acc)
 
     results['avg_train_prep'] = avg_train_prep
     results['avg_train_loss'] = avg_train_loss
@@ -390,7 +512,7 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
 
     return results
 
-def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer):
+def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer, log_config, epoch, total_step, writer):
     """
     Evaluates the model on the given dataloader
 
@@ -408,7 +530,7 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer):
     eval_preds = []
     eval_loss = 0.0  # Initialize evaluation loss
     eval_acc = 0.0
-    autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext # (Fix:MZY): fix expected scalar type mismatch in norm 
+    autocast = torch.cuda.amp.autocast if train_config.use_fp16 else nullcontext # (Fix:MZY): fix expected scalar type mismatch in norm
 
     with MemoryTrace() as memtrace:
         total_length = len(eval_dataloader)
@@ -422,7 +544,7 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer):
             # Ensure no gradients are computed for this scope to save memory
             with torch.no_grad():
                 # Forward pass and compute loss
-                with autocast(): # (Fix:MZY): fix expected scalar type mismatch in norm 
+                with autocast(): # (Fix:MZY): fix expected scalar type mismatch in norm
                     outputs, *rest = model(**batch)
                 acc = rest[0] if rest else -1
                 loss = outputs.loss
@@ -439,6 +561,21 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer):
                 pass  # vallex does not need to show it's result (we can't view any thing from abstract acoustic token)
             pbar.update(1)
             pbar.set_description(f"step: {step+1}/{total_length}, eval_loss: {eval_loss/(step+1):.4f}, eval_acc: {eval_acc/(step+1):.4f}")
+
+            log_description(
+                    log_config,
+                    train_config,
+                    epoch=epoch + 1,
+                    step=step,
+                    dataloader_len=len(eval_dataloader),
+                    step_num=total_step,
+                    lr=0.0,
+                    loss=(eval_loss/(step+1)),
+                    acc=eval_acc/(step+1),
+                    writer=writer,
+                    tag="dev",
+                    log_step=None,
+                )
 
     # If there's more than one CUDA device, reduce evaluation loss across all devices
     if torch.cuda.device_count() > 1 and train_config.enable_fsdp or train_config.enable_ddp:
@@ -462,17 +599,18 @@ def evaluation(model,train_config, eval_dataloader, local_rank, tokenizer):
 
     return eval_ppl, eval_epoch_loss, eval_epoch_acc
 
+
 def freeze_transformer_layers(model, num_layer):
-   for i, layer in enumerate(model.model.layers):
-            if i < num_layer:
-                for param in layer.parameters():
-                    param.requires_grad = False
+    for i, layer in enumerate(model.model.layers):
+        if i < num_layer:
+            for param in layer.parameters():
+                param.requires_grad = False
 
 
 def check_frozen_layers_peft_model(model):
-     for i, layer in enumerate(model.base_model.model.model.layers):
-            for name, param in layer.named_parameters():
-                logger.info(f"Layer {i}, parameter {name}: requires_grad = {param.requires_grad}")
+    for i, layer in enumerate(model.base_model.model.model.layers):
+        for name, param in layer.named_parameters():
+            logger.info(f"Layer {i}, parameter {name}: requires_grad = {param.requires_grad}")
 
 
 def setup():
@@ -511,6 +649,7 @@ def get_parameter_dtypes(model):
         parameter_dtypes[name] = parameter.dtype
     return parameter_dtypes
 
+
 def print_model_size(model, config, rank: int = 0) -> None:
     """
     log model name, the number of trainable parameters and initialization time.
@@ -526,6 +665,7 @@ def print_model_size(model, config, rank: int = 0) -> None:
         logger.info(f"--> Model {config.model_name}")
         total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         logger.info(f"--> {config.model_name} has {total_params / 1e6} Million params\n")
+
 
 def print_module_size(module, module_name, rank: int = 0) -> None:
     """
@@ -574,6 +714,7 @@ def get_policies(cfg, rank):
     wrapping_policy = get_llama_wrapper()
     return mixed_precision_policy, wrapping_policy
 
+
 def save_train_params(train_config, fsdp_config, rank):
     """
     This function saves the train_config and FSDP config into a train_params.yaml.
@@ -612,3 +753,62 @@ def save_train_params(train_config, fsdp_config, rank):
             f.write(config_yaml)
         if rank==0:
             logger.info(f"training params are saved in {file_name}")
+
+
+def log_description(
+    log_config,
+    train_config,
+    epoch=0,
+    step=0,
+    dataloader_len=0,
+    step_num=0,
+    lr=0.0,
+    loss=0.0,
+    acc=0.0,
+    writer=None,
+    tag="train",
+    log_step=None,
+):
+
+    log_interval = log_config.log_interval
+    max_epoch = train_config.num_epochs
+    gradient_accumulation_steps = train_config.gradient_accumulation_steps
+
+    # Determine whether to print
+    if (step + 1) % log_interval == 0:
+        step = log_step if log_step is not None else step
+        gpu_info = ("GPU, memory: usage: {:.3f} GB, "
+                    "peak: {:.3f} GB, "
+                    "cache: {:.3f} GB, "
+                    "cache_peak: {:.3f} GB".format(
+                        torch.cuda.memory_allocated() / 1024 / 1024 / 1024,
+                        torch.cuda.max_memory_allocated() / 1024 / 1024 / 1024,
+                        torch.cuda.memory_reserved() / 1024 / 1024 / 1024,
+                        torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024,
+                    ))
+
+        try:
+            rank = dist.get_rank()
+        except:
+            rank = 0
+
+        description = (f"{tag}, "
+                       f"rank: {rank}, "
+                       f"epoch: {epoch}/{max_epoch}, "
+                       f"step: {step+1}/{dataloader_len}, "
+                       f"step_num: {step_num//gradient_accumulation_steps}, "
+                       f"(loss: {loss:.3f}), "
+                       f"(lr: {lr:.3e}), "
+                       f"(acc: {acc:.3f}), "
+                       f"{gpu_info}")
+        logging.info(description)
+
+        # Add to tensorboard
+        if rank == 0 and writer is not None:
+            writer.add_scalar(f"rank{rank}_loss/{tag}", loss, step_num//gradient_accumulation_steps)
+            writer.add_scalar(f"rank{rank}_lr/{tag}", lr, step_num//gradient_accumulation_steps)
+            writer.add_scalar(f"rank{rank}_acc/{tag}", acc, step_num//gradient_accumulation_steps)
+
+            # for key, var in stats.items():
+            #     writer.add_scalar(f"stats_rank{rank}_{key}/{tag}", var.item(), total_step)
+            #     description_dict[f"stats_rank{rank}_{key}/{tag}"] = var.item()

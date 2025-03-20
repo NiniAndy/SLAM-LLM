@@ -28,9 +28,7 @@ def model_factory(train_config, model_config, **kwargs):
     llm = setup_llm(train_config, model_config, **kwargs)
 
     # projector
-    encoder_projector = setup_encoder_projector(
-        train_config, model_config, **kwargs
-    )
+    encoder_projector = setup_encoder_projector(train_config, model_config, **kwargs)
     model = slam_model(
         encoder,
         llm,

@@ -43,6 +43,7 @@ import wandb
 import hydra
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from pathlib import Path
+import pprint
 
 @hydra.main(config_name=None, version_base=None)
 def main_hydra(cfg: DictConfig):
@@ -78,6 +79,8 @@ def main(kwargs: DictConfig):
                                                                           kwargs.log_config, \
                                                                           kwargs.dataset_config
     
+    ckpt_path = kwargs.get("ckpt_path", None)
+    
     fsdp_config.use_fp16 = train_config.use_fp16
     OmegaConf.set_struct(kwargs,False)
     del kwargs["train_config"]
@@ -90,6 +93,7 @@ def main(kwargs: DictConfig):
     # Set log
     if not os.path.exists(os.path.dirname(log_config.log_file)):
         os.makedirs(os.path.dirname(log_config.log_file), exist_ok=True)
+
     logging.basicConfig(
         level=logging.INFO, 
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -131,10 +135,10 @@ def main(kwargs: DictConfig):
         setup_environ_flags(rank)
 
     if not (train_config.enable_fsdp or train_config.enable_ddp) or rank == 0:
-        logger.info("train_config: {}".format(train_config))
-        logger.info("fsdp_config: {}".format(fsdp_config))
-        logger.info("model_config: {}".format(model_config))
-        logger.info("log_config: {}".format(log_config))
+        logger.info("train_config: \n{}".format(pprint.pformat(OmegaConf.to_container(train_config, resolve=True), indent=4)))
+        logger.info("fsdp_config: \n{}".format(pprint.pformat(OmegaConf.to_container(fsdp_config, resolve=True), indent=4)))
+        logger.info("model_config: \n{}".format(pprint.pformat(OmegaConf.to_container(model_config, resolve=True), indent=4)))
+        logger.info("log_config: \n{}".format(pprint.pformat(OmegaConf.to_container(log_config, resolve=True), indent=4)))
 
     # Set wandb
     if not (train_config.enable_fsdp or train_config.enable_ddp) or rank == 0:
@@ -180,8 +184,7 @@ def main(kwargs: DictConfig):
             apply_fsdp_checkpointing(model)
     elif train_config.enable_ddp:
         model = model.cuda(local_rank)
-        model = DDP(model, device_ids=[local_rank],
-                    find_unused_parameters=kwargs.get("train_conf", {}).get("find_unused_parameters", False))
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=kwargs.get("train_conf", {}).get("find_unused_parameters", False))
     elif not train_config.quantization:
         model.to(device)
 
@@ -192,32 +195,22 @@ def main(kwargs: DictConfig):
             wandb.config.update({"dataset_config": dataset_config})
     
     # Load and preprocess the dataset for training and validation
-    dataset_train = get_preprocessed_dataset(
-        tokenizer,
-        dataset_config,
-        split="train",
-    )
+    dataset_train = get_preprocessed_dataset(tokenizer, dataset_config, split="train",)
+
     if not (train_config.enable_fsdp or train_config.enable_ddp) or rank == 0:
         logger.info(f"--> Training Set Length = {len(dataset_train)}")
-    dataset_val = get_preprocessed_dataset(
-        tokenizer,
-        dataset_config,
-        split="val",
-    )
+    dataset_val = get_preprocessed_dataset(tokenizer, dataset_config, split="val",)
+
     if not (train_config.enable_fsdp or train_config.enable_ddp) or rank == 0:
         logger.info(f"--> Validation Set Length = {len(dataset_val)}")
+
     if train_config.batching_strategy == "packing":
         dataset_train = ConcatDataset(dataset_train, chunk_size=train_config.context_length)
 
     train_dl_kwargs = get_dataloader_kwargs(train_config, dataset_train, tokenizer, "train")
 
     # Create DataLoaders for the training and validation dataset
-    train_dataloader = torch.utils.data.DataLoader(
-        dataset_train,
-        num_workers=train_config.num_workers_dataloader,
-        pin_memory=True,
-        **train_dl_kwargs,
-    )
+    train_dataloader = torch.utils.data.DataLoader(dataset_train, num_workers=train_config.num_workers_dataloader,  pin_memory=True, **train_dl_kwargs,)
 
     eval_dataloader = None
     if train_config.run_validation:
@@ -226,12 +219,7 @@ def main(kwargs: DictConfig):
 
         val_dl_kwargs = get_dataloader_kwargs(train_config, dataset_val, tokenizer, "val")
 
-        eval_dataloader = torch.utils.data.DataLoader(
-            dataset_val,
-            num_workers=train_config.num_workers_dataloader,
-            pin_memory=True,
-            **val_dl_kwargs,
-        )
+        eval_dataloader = torch.utils.data.DataLoader(dataset_val, num_workers=train_config.num_workers_dataloader, pin_memory=True, **val_dl_kwargs, )
 
     # Initialize the optimizer and learning rate scheduler
     if fsdp_config.pure_bf16 and fsdp_config.optimizer == "anyprecision":
@@ -249,13 +237,13 @@ def main(kwargs: DictConfig):
             lr=train_config.lr,
             weight_decay=train_config.weight_decay,
         )
+
     # scheduler = StepLR(optimizer, step_size=1, gamma=train_config.gamma)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, 
-        lr_lambda=lambda step: (
-            min(step / train_config.warmup_steps, 1) if step < train_config.warmup_steps
-            else  max(0.0, 1 - (step - train_config.warmup_steps) / (train_config.total_steps - train_config.warmup_steps))
-            # else 1
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,  
+                                                  lr_lambda=lambda step: (min(step / train_config.warmup_steps, 1) 
+                                                                          if step < train_config.warmup_steps
+                                                                          else  max(0.0, 1 - (step - train_config.warmup_steps) / (train_config.total_steps - train_config.warmup_steps))
+                                                    # else 1
         )
     )
 
@@ -274,6 +262,7 @@ def main(kwargs: DictConfig):
         local_rank if train_config.enable_fsdp or train_config.enable_ddp else None,
         rank if train_config.enable_fsdp or train_config.enable_ddp else None,
     )
+
     if not (train_config.enable_fsdp or train_config.enable_ddp) or rank==0:
         [logger.info(f'Key: {k}, Value: {v}') for k, v in results.items()]
 

@@ -93,3 +93,11 @@ examples/asr_librispeech/exp/vicuna-7b-v1.5-librispeech-linear-steplrwarmupkeep1
 examples/asr_librispeech/exp/vicuna-7b-v1.5-librispeech-linear-steplrwarmupkeep1e-4-whisper-medium-20250315/asr_epoch_2_step_67423/.hydra/overrides.yaml
 examples/asr_librispeech/exp/vicuna-7b-v1.5-librispeech-linear-steplrwarmupkeep1e-4-whisper-medium-20250315/asr_epoch_2_step_7423/model.pt
 examples/asr_librispeech/exp/vicuna-7b-v1.5-librispeech-linear-steplrwarmupkeep1e-4-whisper-medium-20250315/asr_epoch_2_step_9423/model.pt
+examples/asr_librispeech/exp/whisper-medium-linear-vicuna-7b-v1_5-ls960-20250319/asr_epoch_2_step_34423.pt
+.gitignore
+examples/asr_librispeech/exp/whisper-medium-linear-vicuna-7b-v1_5-ls960-20250319/ckpt.ipynb
+examples/asr_librispeech/exp/whisper-medium-linear-vicuna-7b-v1_5-ls960-20250319/log.txt
+examples/asr_librispeech/exp/whisper-medium-linear-vicuna-7b-v1_5-ls960-20250319/.hydra/config.yaml
+examples/asr_librispeech/exp/whisper-medium-linear-vicuna-7b-v1_5-ls960-20250319/.hydra/hydra.yaml
+examples/asr_librispeech/exp/whisper-medium-linear-vicuna-7b-v1_5-ls960-20250319/.hydra/overrides.yaml
+examples/asr_librispeech/exp/vicuna-7b-v1.5-librispeech-linear-steplrwarmupkeep1e-4-whisper-medium-20250315/asr_epoch_2_step_67423/decode_test_clean_beam4_wer

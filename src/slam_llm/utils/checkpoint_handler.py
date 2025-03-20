@@ -173,12 +173,18 @@ def save_model_checkpoint_deepspeed(model, cfg, checkpoint_name="checkpoint"):
     save_full_path = save_dir
     model.save_checkpoint(save_dir=save_full_path, exclude_frozen_parameters=True)
     logger.info(f"encoder saved at {save_full_path}")
+
+
+
+
+
+    
       
 def save_model_checkpoint_peft(model, optimizer, rank, cfg, checkpoint_name="checkpoint", save_trainable_only=True):
     logger.info(f"--> saving model ...")
-    save_dir = os.path.join(cfg.output_dir, checkpoint_name)
+    save_dir = cfg.output_dir
     os.makedirs(save_dir, exist_ok=True)
-    save_full_path = os.path.join(save_dir, "model.pt")
+    save_full_path = os.path.join(save_dir, f"{checkpoint_name}.pt")
     if cfg.enable_ddp:
         model = model.module
     cpu_state = model.state_dict()
@@ -191,11 +197,13 @@ def save_model_checkpoint_peft(model, optimizer, rank, cfg, checkpoint_name="che
         state_dict = cpu_state
     torch.save(state_dict, save_full_path)
     logger.info(f"encoder saved at {save_full_path}")
+    return save_full_path
+
+
+
     
 def save_model_checkpoint_peft_full_shard(model, optimizer, rank, cfg, epoch=0):
-    with FSDP.state_dict_type(
-        model, StateDictType.FULL_STATE_DICT, fullstate_save_policy
-    ):
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, fullstate_save_policy):
         cpu_state = model.state_dict()
         logger.info(f"saving process: rank {rank}  done w model state_dict\n")
 
@@ -228,6 +236,9 @@ def save_model_checkpoint_peft_full_shard(model, optimizer, rank, cfg, epoch=0):
         
     dist.barrier()
 
+
+
+
 def load_model_checkpoint(model, rank, cfg):
     """load local checkpoint to rank0 cpu
     must be called * before * passing to FSDP"""
@@ -236,16 +247,11 @@ def load_model_checkpoint(model, rank, cfg):
         return
 
     # where is the checkpoint at...
-    full_state_dict_model_path = (
-        Path.cwd() / cfg.checkpoint_folder / cfg.checkpoint_model_filename
-    )
+    full_state_dict_model_path = (Path.cwd() / cfg.checkpoint_folder / cfg.checkpoint_model_filename)
     # is it present...
     if not full_state_dict_model_path.is_file():
-        logger.info(
-            f"model checkpoint {full_state_dict_model_path} not present. Returning..."
-        )
+        logger.info(f"model checkpoint {full_state_dict_model_path} not present. Returning...")
         return
-
 
     model_checkpoint = torch.load(full_state_dict_model_path)
     # integrate into loaded model
@@ -258,36 +264,21 @@ def load_model_checkpoint(model, rank, cfg):
 def save_optimizer_checkpoint(model, optimizer, rank, cfg, epoch=1):
     """save optimizer state via full state dict"""
 
-   
     logger.info(f"--> optim state call on rank {rank}\n")
-
     # pull all sharded optimizer states to rank0 cpu...
-
     optim_state = FSDP.full_optim_state_dict(model, optimizer)
-
-    
     logger.info(f"optim state dict ready on {rank} and len of {len(optim_state)}\n")
 
     if rank == 0:
-        folder_name = (
-        cfg.dist_checkpoint_root_folder
-        + "/"
-        + cfg.dist_checkpoint_folder
-        + "-"
-        + cfg.model_name
-        )
+        folder_name = (cfg.dist_checkpoint_root_folder + "/" + cfg.dist_checkpoint_folder + "-" + cfg.model_name)
         save_dir = Path.cwd() / folder_name
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        opt_save_name = (
-            "optimizer" + "-" + cfg.model_name + "-" + str(epoch) + ".pt"
-        )
+        opt_save_name = ("optimizer" + "-" + cfg.model_name + "-" + str(epoch) + ".pt" )
         opt_save_full_path = save_dir / opt_save_name
 
         logger.info(f"--> saving optimizer state...")
-
         torch.save(optim_state, opt_save_full_path)
-
         logger.info(f"--> saved {opt_save_full_path} to disk")
 
 
@@ -295,39 +286,26 @@ def load_optimizer_checkpoint(model, optimizer_checkpoint_path, rank):
     """load an fsdp optimizer full_state checkpoint using scatter method
     this ensures only rank 0 loads the optimizer state dict and scatters to other ranks
     """
-
-
     if not optimizer_checkpoint_path.is_file():
-        logger.info(
-            f"warning - optimizer checkpoint not present {optimizer_checkpoint_path}. Returning. "
-        )
+        logger.info(f"warning - optimizer checkpoint not present {optimizer_checkpoint_path}. Returning. ")
         return
 
     full_osd = None
-
     if rank == 0:
         full_osd = torch.load(optimizer_checkpoint_path)
 
     # called from all ranks, though only rank0 has a valid param for full_osd
     sharded_osd = FSDP.scatter_full_optim_state_dict(full_osd, model)
-
     logger.info(f"optimizer shard loaded on rank {rank}")
+
+
+
 
 def load_sharded_model_single_gpu(model,model_path):
     
     reader = FileSystemReader(model_path)
-    
-    state_dict = {
-        "model": model.state_dict()
-    }
-    
-    dist_cp.load_state_dict(
-                state_dict=state_dict,
-                storage_reader= FileSystemReader(model_path),
-                no_dist=True,
-            )
-    
+    state_dict = {"model": model.state_dict()}
+    dist_cp.load_state_dict(state_dict=state_dict, storage_reader= FileSystemReader(model_path), no_dist=True,)
     model.load_state_dict(state_dict["model"])
-    
     logger.info(f"Sharded state checkpoint loaded from {model_path}")
     return model
