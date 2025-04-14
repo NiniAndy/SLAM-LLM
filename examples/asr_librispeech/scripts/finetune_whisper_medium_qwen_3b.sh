@@ -20,33 +20,35 @@ echo "Project dir: $project_dir"
 export TORCH_ELASTIC_ERROR_FILE=$project_dir/torch_error.log
 
 
-speech_encoder_path=/ssd/zhuang/code/LLM/whisper/medium.pt
-llm_path=/ssd/zhuang/code/LLM/vicuna-7b-v.15
-train_data_path=/ssd/zhuang/code/FunASR/examples/librispeech/DATA/data/train_960/audio_datasets.jsonl
-val_data_path=/ssd/zhuang/code/FunASR/examples/librispeech/DATA/data/dev_clean/audio_datasets.jsonl
+speech_encoder_path=/ssd/zhuang/code/LLM/whisper/large-v3.pt
+llm_path=/ssd/zhuang/code/LLM/Qwen2.5-3B-Instruct/
+train_data_path=/ssd/zhuang/code/FunASR/examples/code_switching/DATA/libri_aishell_data/train/audio_datasets.jsonl
+val_data_path=/ssd/zhuang/code/FunASR/examples/asru2019/DATA/data/test/audio_datasets.jsonl
 
 output_dir=$project_dir/exp
 mkdir -p "${output_dir}"
-output_dir=$output_dir/whisper-medium-linear-vicuna-7b-v1_5-ls960-$(date +"%Y%m%d")
+output_dir=$output_dir/whisper-large-linear-qwen-v2_5-3B-mixcs-$(date +"%Y%m%d")
 echo "Save path: $output_dir"
+
 
 hydra_args="
 hydra.run.dir=$output_dir \
-++model_config.llm_name=vicuna-7b-v1.5 \
+++model_config.llm_name=qwen-v2.5-3b \
 ++model_config.llm_path=$llm_path \
-++model_config.llm_dim=4096 \
+++model_config.llm_dim=2048 \
 ++model_config.encoder_name=whisper \
 ++model_config.encoder_projector_ds_rate=5 \
 ++model_config.encoder_path=$speech_encoder_path \
-++model_config.encoder_dim=1024 \
+++model_config.encoder_dim=1280 \
 ++model_config.encoder_projector=linear \
-++dataset_config.dataset=speech_dataset \
+++dataset_config.dataset=speech_dataset_MsCnEn
+++dataset_config.file=/ssd/zhuang/code/SLAM-LLM/src/slam_llm/datasets/speech_dataset_MsCnEn.py:get_speech_dataset_MsCnEn
 ++dataset_config.train_data_path=$train_data_path \
 ++dataset_config.val_data_path=$val_data_path \
 ++dataset_config.input_type=mel \
-++dataset_config.mel_size=80 \
+++dataset_config.mel_size=128 \
 ++train_config.model_name=asr \
-++train_config.num_epochs=5 \
+++train_config.num_epochs=10 \
 ++train_config.freeze_encoder=true \
 ++train_config.freeze_llm=true \
 ++train_config.batching_strategy=custom \
@@ -54,15 +56,18 @@ hydra.run.dir=$output_dir \
 ++train_config.total_steps=150000 \
 ++train_config.lr=1e-4 \
 ++train_config.validation_interval=4000 \
-++train_config.batch_size_training=1 \
-++train_config.val_batch_size=1 \
-++train_config.gradient_accumulation_steps=4 \
-++train_config.num_workers_dataloader=4 \
+++train_config.batch_size_training=4 \
+++train_config.val_batch_size=12 \
+++train_config.gradient_accumulation_steps=2 \
+++train_config.num_workers_dataloader=2 \
 ++train_config.output_dir=$output_dir \
 ++log_config.log_file=$output_dir/log.txt \
 ++log_config.log_interval=500 \
 ++metric=acc \
 "
+
+# ++dataset_config.dataset=speech_dataset_MsCnEn \
+# ++dataset_config.file=/ssd/zhuang/code/SLAM-LLM/src/slam_llm/datasets/speech_dataset_MsCnEn.py:get_speech_dataset_MsCnEn \
 
 # -m debugpy --listen 5678 --wait-for-client
 if [[ $CUDA_VISIBLE_DEVICES != *","* ]]; then
@@ -78,8 +83,10 @@ else
         $code_dir/finetune_asr.py \
         --config-path "conf" \
         --config-name "prompt.yaml" \
+        ++dataset_config.prompt="You are a speech recognition model. Transcribe the English-Chinese code switch audio into text without any punctuation marks. " \
         ++train_config.enable_fsdp=false \
         ++train_config.enable_ddp=true \
+        ++train_config.enable_fsdp=false \
         ++train_config.use_fp16=true \
         $hydra_args
 fi

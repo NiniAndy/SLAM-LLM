@@ -27,6 +27,7 @@ from slam_llm.utils.dataset_utils import get_preprocessed_dataset
 from slam_llm.data.concatenator import ConcatDataset
 
 from slam_llm.utils.model_utils import get_custom_model_factory
+from slam_llm.utils.model_summary import model_summary
 from slam_llm.utils.train_utils import (
     train,
     freeze_transformer_layers,
@@ -79,7 +80,6 @@ def main(kwargs: DictConfig):
                                                                           kwargs.log_config, \
                                                                           kwargs.dataset_config
     
-    ckpt_path = kwargs.get("ckpt_path", None)
     
     fsdp_config.use_fp16 = train_config.use_fp16
     OmegaConf.set_struct(kwargs,False)
@@ -246,6 +246,10 @@ def main(kwargs: DictConfig):
                                                     # else 1
         )
     )
+
+    local_rank = int(os.environ["LOCAL_RANK"])
+    if local_rank == 0:
+        logging.info(f"{model_summary(model)}")
 
     # Start the training process
     results = train(

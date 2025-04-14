@@ -98,30 +98,19 @@ class slam_model_asr(slam_model):
             audio_raw = whisper.load_audio(wav_path)
             audio_raw = whisper.pad_or_trim(audio_raw)
 
-            mel_size = getattr(
-                self.dataset_config, "mel_size", 80
-            )  # 80 for large v1 and v2, 128 for large v3
-            audio_mel = (
-                whisper.log_mel_spectrogram(audio_raw, n_mels=mel_size)
-                .permute(1, 0)[None, :, :]
-                .to(device)
-            )
+            mel_size = getattr(self.dataset_config, "mel_size", 80)  # 80 for large v1 and v2, 128 for large v3
+            audio_mel = (whisper.log_mel_spectrogram(audio_raw, n_mels=mel_size) .permute(1, 0)[None, :, :] .to(device))
 
-            encoder_outs = self.encoder.extract_variable_length_features(
-                audio_mel.permute(0, 2, 1)
-            )
+            encoder_outs = self.encoder.extract_variable_length_features(audio_mel.permute(0, 2, 1))
 
             if self.model_config.encoder_projector == "q-former":
-                audio_mel_post_mask = torch.ones(
-                    encoder_outs.size()[:-1], dtype=torch.long
-                ).to(encoder_outs.device)
+                audio_mel_post_mask = torch.ones(encoder_outs.size()[:-1], dtype=torch.long).to(encoder_outs.device)
                 encoder_outs = self.encoder_projector(encoder_outs, audio_mel_post_mask)
             if self.model_config.encoder_projector == "linear":
                 encoder_outs = self.encoder_projector(encoder_outs)
         else:  # Text QA
-            encoder_outs = torch.empty(
-                1, 0, self.llm.model.embed_tokens.embedding_dim
-            ).to(device)
+            encoder_outs = torch.empty(1, 0, self.llm.model.embed_tokens.embedding_dim).to(device)
+
 
         prompt = "USER: {}\n ASSISTANT:".format(prompt)
         prompt_ids = self.tokenizer.encode(prompt)
@@ -135,17 +124,11 @@ class slam_model_asr(slam_model):
         else:
             inputs_embeds = self.llm.model.model.model.embed_tokens(prompt_ids)
 
-        inputs_embeds = torch.cat(
-            (encoder_outs, inputs_embeds[None, :, :]), dim=1
-        )  # [audio,prompt]
+        inputs_embeds = torch.cat((encoder_outs, inputs_embeds[None, :, :]), dim=1)  # [audio,prompt]
 
-        attention_mask = torch.ones(inputs_embeds.size()[:-1], dtype=torch.long).to(
-            inputs_embeds.device
-        )
+        attention_mask = torch.ones(inputs_embeds.size()[:-1], dtype=torch.long).to(inputs_embeds.get_device)
 
         # generate
-        model_outputs = self.generate(
-            inputs_embeds=inputs_embeds, attention_mask=attention_mask, **kwargs
-        )
+        model_outputs = self.generate(inputs_embeds=inputs_embeds, attention_mask=attention_mask, **kwargs)
 
         return model_outputs

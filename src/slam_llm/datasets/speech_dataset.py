@@ -14,6 +14,84 @@ import whisper
 from slam_llm.utils.compute_utils import calculate_output_length_1d
 
 
+import re
+
+
+def is_chinese(char):
+    """检查字符是否是中文字符"""
+    return '\u4e00' <= char <= '\u9fff'
+
+
+def is_english(char):
+    """检查字符是否是英文字符"""
+    return char.isalpha() and not is_chinese(char)
+
+
+def classify_text(text):
+    result = []
+    current_type = None  # 当前字符类型，'zh' 或 'en'
+    current_str = []  # 存储当前的字符部分
+
+    # 遍历文本中的每个字符
+    for char in text:
+        if is_chinese(char):
+            if current_type == 'en' and current_str:  # 之前是英文，遇到中文就保存
+                result.append([current_type, ''.join(current_str)])
+                current_str = []
+            current_type = 'zh'
+            current_str.append(char)
+        elif is_english(char):
+            if current_type == 'zh' and current_str:  # 之前是中文，遇到英文就保存
+                result.append([current_type, ''.join(current_str)])
+                current_str = []
+            current_type = 'en'
+            current_str.append(char)
+        # 忽略空格和标点符号：不做任何操作，继续下一个字符
+        elif current_str:  # 空格或标点符号间的字符都应该作为一个整体处理
+            result.append([current_type, ''.join(current_str)])
+            current_str = []
+
+    # 最后一个部分需要添加到结果
+    if current_str:
+        result.append([current_type, ''.join(current_str)])
+
+    return result
+
+
+def merge_language_parts(parts):
+    result = []
+    current_language = None
+    current_text = []
+
+    for part in parts:
+        language, text = part
+
+        if language == current_language:
+            # 如果语言相同，继续合并文本，并在英文部分加上空格
+            if language == 'en' and current_text:
+                current_text.append(' ' + text)  # 在英文部分加上空格
+            else:
+                current_text.append(text)
+        else:
+            # 如果语言不同，保存当前的部分，并开始新的部分
+            if current_text:
+                result.append([current_language, ''.join(current_text)])
+            current_language = language
+            current_text = [text]
+
+    # 最后一个部分需要加入结果
+    if current_text:
+        result.append([current_language, ''.join(current_text)])
+
+    return result
+
+
+def classify_en_cn(text):
+    return merge_language_parts(classify_text(text))
+
+
+
+
 class SpeechDatasetJsonl(torch.utils.data.Dataset):
     
     def __init__(self,
@@ -132,6 +210,19 @@ class SpeechDatasetJsonl(torch.utils.data.Dataset):
                 "target": target,
                 "prompt_length": prompt_length,
             }
+
+        regularized_target = ""
+        target = classify_en_cn(target)
+   
+        for i in range(len(target)):
+            regularized_target += target[i][1]
+            # if i != 0 and target[i][0] == "en":
+            #     txt = " "+ target[i][1]
+            # else:
+            #     txt = target[i][1]
+            # regularized_target += txt
+
+        target = regularized_target
 
         answer = self.answer_template.format(target)
         example = prompt + answer  # FIX(MZY): avoid putting a bos token before answer.

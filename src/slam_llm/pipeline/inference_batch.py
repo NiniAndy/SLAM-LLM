@@ -122,19 +122,34 @@ def main(kwargs: DictConfig):
 			collate_fn=dataset_test.collator
         )
 	
+	# origanal inference
+	# logger.info("=====================================")
+	# pred_path = kwargs.get('decode_log') + "_pred"
+	# gt_path = kwargs.get('decode_log') + "_gt"
+	# with open(pred_path, "w") as pred, open(gt_path, "w") as gt:
+	# 	for step, batch in tqdm(enumerate(test_dataloader), total=len(test_dataloader)):
+	# 		for key in batch.keys():
+	# 			batch[key] = batch[key].to(device) if isinstance(batch[key], torch.Tensor) else batch[key]
+	# 		model_outputs = model.generate(**batch)
+	# 		output_text = model.tokenizer.batch_decode(model_outputs, add_special_tokens=False, skip_special_tokens=True)
+	# 		for key, text, target in zip(batch["keys"], output_text, batch["targets"]):
+	# 			pred.write(key + "\t" + text.replace("\n", " ") + "\n")
+	# 			gt.write(key + "\t" + target + "\n")
 
-	logger.info("=====================================")
-	pred_path = kwargs.get('decode_log') + "_pred"
-	gt_path = kwargs.get('decode_log') + "_gt"
-	with open(pred_path, "w") as pred, open(gt_path, "w") as gt:
-		for step, batch in tqdm(enumerate(test_dataloader), total=len(test_dataloader)):
-			for key in batch.keys():
-				batch[key] = batch[key].to(device) if isinstance(batch[key], torch.Tensor) else batch[key]
-			model_outputs = model.generate(**batch)
-			output_text = model.tokenizer.batch_decode(model_outputs, add_special_tokens=False, skip_special_tokens=True)
-			for key, text, target in zip(batch["keys"], output_text, batch["targets"]):
-				pred.write(key + "\t" + text.replace("\n", " ") + "\n")
-				gt.write(key + "\t" + target + "\n")
+	# multi-gpu inference
+	from slam_llm.utils.datadir_writer import DatadirWriter
+	writer = DatadirWriter(kwargs.get('decode_log'))
+	ibest_writer = writer[f"{0 + 1}best_recog"]
+
+	for step, batch in tqdm(enumerate(test_dataloader), total=len(test_dataloader)):
+		for key in batch.keys():
+			batch[key] = batch[key].to(device) if isinstance(batch[key], torch.Tensor) else batch[key]
+		model_outputs = model.generate(**batch)
+		output_text = model.tokenizer.batch_decode(model_outputs, add_special_tokens=False, skip_special_tokens=True)
+		for key, text, target in zip(batch["keys"], output_text, batch["targets"]):
+			text = text.replace("\n", " ")
+			ibest_writer["text"][key] = text
+
 
 
 if __name__ == "__main__":

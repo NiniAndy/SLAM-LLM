@@ -103,9 +103,14 @@ def train(model,
     checkpoint_times = []
     results = {}
     best_val_loss = float("inf")
-    filename=None
+    filename = None
+    management = "acc"
+    filename_list = []  #[[acc/loss, filename], ...]
+    save_flag=False
+    save_num = 10
     current_lr = lr_scheduler.get_last_lr()[0]
     best_val_acc = 0.0
+
     for epoch in range(train_config.num_epochs):
         epoch_start_time = time.perf_counter()
         with MemoryTrace() as memtrace:  # track the memory usage
@@ -169,7 +174,9 @@ def train(model,
                 if train_config.use_fp16:
                     # if fp16 is enabled, use gradient scaler to handle gradient update
                     scaler.scale(loss).backward()
-                    if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                    if (step + 1
+                        ) % gradient_accumulation_steps == 0 or step == len(
+                            train_dataloader) - 1:
                         scaler.step(optimizer)
                         scaler.update()
                         if lr_scheduler is not None:
@@ -193,7 +200,9 @@ def train(model,
                 else:
                     # regular backpropagation when fp16 is not used
                     loss.backward()
-                    if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                    if (step + 1
+                        ) % gradient_accumulation_steps == 0 or step == len(
+                            train_dataloader) - 1:
                         optimizer.step()
                         if lr_scheduler is not None:
                             lr_scheduler.step()
@@ -205,20 +214,18 @@ def train(model,
                         if log_config.use_wandb and step % log_config.log_interval == 0:
                             if train_config.enable_fsdp or train_config.enable_ddp:
                                 if rank == 0:
-                                    wandb.log({"train_inner/lr": current_lr}, step=(epoch * total_length +step))
+                                    wandb.log({"train_inner/lr": current_lr},
+                                              step=(epoch * total_length +
+                                                    step))
                             else:
-                                wandb.log({"train_inner/lr": current_lr}, step=(epoch * total_length + step))
+                                wandb.log({"train_inner/lr": current_lr},
+                                          step=(epoch * total_length + step))
                         optimizer.zero_grad()
                         pbar.update(1)
 
-                device = next(model.parameters()).device
-                if device.type == "cuda":
-                    with torch.cuda.device(device):
-                        torch.cuda.empty_cache()
-                        if rank == 0:
-                            logger.info(f"Clearing GPU cache for all ranks")
-
-                pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()}, acc: {acc})")
+                pbar.set_description(
+                    f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()*gradient_accumulation_steps}, acc: {acc*gradient_accumulation_steps})"
+                )
 
                 log_description(
                     log_config,
@@ -228,112 +235,301 @@ def train(model,
                     dataloader_len=len(train_dataloader),
                     step_num=step_num,
                     lr=current_lr,
-                    loss=loss.detach().float(),
-                    acc=acc,
+                    loss=loss.detach().float() * gradient_accumulation_steps,
+                    acc=acc * gradient_accumulation_steps,
                     writer=writer,
                     tag="train",
                     log_step=None,
                 )
 
                 # dev purposes
-                if (epoch * total_length + step + 1 ) % train_config.validation_interval == 0 and train_config.run_validation:
-                    eval_ppl, eval_epoch_loss, *rest = evaluation(model, train_config, eval_dataloader, local_rank, tokenizer, log_config, epoch, step_num, writer)
+                if (
+                        epoch * total_length + step + 1
+                ) % train_config.validation_interval == 0 and train_config.run_validation:
+                    eval_ppl, eval_epoch_loss, *rest = evaluation(
+                        model, train_config, eval_dataloader, local_rank,
+                        tokenizer, log_config, epoch, step_num, writer)
                     eval_epoch_acc = rest[0] if rest else -1
                     checkpoint_start_time = time.perf_counter()
-                    if train_config.save_model and (eval_epoch_loss < best_val_loss):
-                        # 删除之前的checkpoint
-                        if filename is not None:
-                            logger.info(f"Deleting the previous checkpoint {filename}")
-                            os.remove(filename)
+                    
 
-                        checkpoint_name = f"{train_config.model_name}_epoch_{str(epoch+1)}_step_{step+1}"
+                    # if train_config.save_model and (eval_epoch_loss < best_val_loss):
+                    if train_config.save_model:
+                        # 只在卡0上操作
                         if train_config.enable_fsdp or train_config.enable_ddp:
-                            dist.barrier()
-
-                        # save the model lora checkpoint
-                        if train_config.use_peft:
-                            if train_config.enable_fsdp or train_config.enable_ddp:
-                                if rank == 0:
-                                    logger.info( f"we are about to save the PEFT modules")
-                            else:
-                                logger.info(f"we are about to save the PEFT modules")
-
-                            if train_config.enable_fsdp:
-                                if fsdp_config.sharding_strategy == ShardingStrategy.FULL_SHARD:
-                                    filename = save_model_checkpoint_peft_full_shard(model, optimizer, rank, train_config, epoch=epoch)
-                                elif fsdp_config.sharding_strategy == ShardingStrategy.NO_SHARD:
-                                    if rank == 0:
-                                        filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
-                                    dist.barrier()
-                            elif train_config.enable_ddp:
-                                if rank == 0:
-                                    filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
-                                dist.barrier()
-                            else:
-                                # model.save_pretrained(train_config.output_dir)
-                                filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
-                                
-                            if train_config.enable_fsdp or train_config.enable_ddp:
-                                if rank == 0:
-                                    logger.info(f"PEFT modules are saved in {train_config.output_dir} directory")
-                            else:
-                                logger.info(f"PEFT modules are saved in {train_config.output_dir} directory")
-
-
-                        # save trainable model checkpoint
-                        elif not train_config.use_peft and train_config.freeze_llm:
-                            logger.info(f"llm is frozen, we are about to save other parts.")
-                            if train_config.enable_fsdp:
-                                if fsdp_config.sharding_strategy == ShardingStrategy.FULL_SHARD:
-                                    filename = save_model_checkpoint_peft_full_shard(model, optimizer, rank, train_config, epoch=epoch)
-                                elif fsdp_config.sharding_strategy == ShardingStrategy.NO_SHARD:
-                                    if rank == 0:
-                                        filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
-                                    dist.barrier()
-                            elif train_config.enable_ddp:
-                                if rank == 0:
-                                    filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
-                                dist.barrier()
-                            else:
-                                filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
-
-
-                        # save entire model checkpoint
+                            if rank == 0:
+                                # 如果队列长度大于等于10个模型删除队列里最差的的checkpoint
+                                if len(filename_list) >= save_num:
+                                    if management == "acc":
+                                        filename_list.sort(key=lambda x: x[0])
+                                        worst_file = filename_list[0]
+                                        worst_acc, del_file = worst_file
+                                        if worst_acc > eval_epoch_acc: # 说明现在这个模型没有之前最差的好，因此不保存
+                                            save_flag = False
+                                            logger.info(f"The newest model is not better before so donot save ")
+                                        else:
+                                            save_flag = True
+                                            filename_list.pop(0) #删除最差的模型
+                                            logger.info(f"The newest model is better, deleting the previous checkpoint {del_file}")
+                                    elif management == "loss":
+                                        filename_list.sort(key=lambda x: x[0], reverse=True)
+                                        worst_file = filename_list[0]
+                                        worst_loss, del_file = worst_file
+                                        if worst_loss < eval_epoch_loss: # 说明现在这个模型没有之前最差的好，因此不保存
+                                            save_flag = False
+                                            logger.info(f"The newest model is not better before so donot save ")
+                                        else:
+                                            save_flag = True
+                                            filename_list.pop(0)
+                                            logger.info(f"The newest model is better, deleting the previous checkpoint {del_file}")
+                                    else:
+                                        raise ValueError( f"Unknown management type: {management}")
+                                    os.remove(del_file)
+                                else:
+                                    save_flag = True
+                            # 广播到其他rank
+                            save_flag = torch.tensor([save_flag], dtype=torch.int, device=local_rank)
+                            dist.all_reduce(save_flag, op=dist.ReduceOp.SUM)  # 所有rank会得到相同的值
+                            save_flag = bool(save_flag.item())
                         else:
-                            if train_config.enable_fsdp:
-                                if getattr(StateDictType, fsdp_config.checkpoint_type ) == StateDictType.FULL_STATE_DICT:
-                                    save_model_checkpoint(model, optimizer, rank, train_config, epoch=epoch)
+                            if len(filename_list) >= save_num:
+                                if management == "acc":
+                                    filename_list.sort(key=lambda x: x[0])
+                                    print (f"filename_list: {filename_list}")
+                                    worst_file = filename_list[0]
+                                    print (f"worst_file: {worst_file}")
+                                    worst_acc, del_file = worst_file
+                                    print (f"worst_acc: {worst_acc}, del_file: {del_file}")
+                                    if worst_acc > eval_epoch_acc: # 说明现在这个模型没有之前最差的好，因此不保存
+                                        save_flag = False
+                                        logger.info(f"The newest model is not better before so donot save ")
+                                    else:
+                                        save_flag = True
+                                        filename_list.pop(0) #删除最差的模型
+                                        logger.info(f"The newest model is better, deleting the previous checkpoint {del_file}")
+                                elif management == "loss":
+                                    filename_list.sort(key=lambda x: x[0], reverse=True)
+                                    worst_file = filename_list[0]
+                                    worst_loss, del_file = worst_file
+                                    if worst_loss < eval_epoch_loss: # 说明现在这个模型没有之前最差的好，因此不保存
+                                        save_flag = False
+                                        logger.info(f"The newest model is not better before so donot save ")
+                                    else:
+                                        save_flag = True
+                                        filename_list.pop(0)
+                                        logger.info(f"The newest model is better, deleting the previous checkpoint {del_file}")
+                                else:
+                                    raise ValueError( f"Unknown management type: {management}")
+                                
 
-                                elif getattr(StateDictType, fsdp_config.checkpoint_type) == StateDictType.SHARDED_STATE_DICT:
-                                    save_model_and_optimizer_sharded(model, rank, train_config)
-                                    logger.info( " Saving the FSDP model checkpoints using SHARDED_STATE_DICT")
-                                    logger.info("=====================================================")
-                                    
+                                os.remove(del_file)
+                            else:
+                                save_flag = True
+
+
+                        # 如果队列里不足10个模型或者已经被删除掉一个模型（意味着需要保存模型）
+                        if save_flag==True:
+                            checkpoint_name = f"{train_config.model_name}_epoch_{str(epoch+1)}_step_{step+1}"
+                            if train_config.enable_fsdp or train_config.enable_ddp:
+                                dist.barrier()
+
+                            # save the model lora checkpoint
+                            if train_config.use_peft:
+                                if train_config.enable_fsdp or train_config.enable_ddp:
+                                    if rank == 0:
+                                        logger.info(
+                                            f"we are about to save the PEFT modules"
+                                        )
+                                else:
+                                    logger.info(
+                                        f"we are about to save the PEFT modules")
+
+                                if train_config.enable_fsdp:
+                                    if fsdp_config.sharding_strategy == ShardingStrategy.FULL_SHARD:
+                                        filename = save_model_checkpoint_peft_full_shard(
+                                            model,
+                                            optimizer,
+                                            rank,
+                                            train_config,
+                                            epoch=epoch)
+                                    elif fsdp_config.sharding_strategy == ShardingStrategy.NO_SHARD:
+                                        if rank == 0:
+                                            filename = save_model_checkpoint_peft(
+                                                model,
+                                                optimizer,
+                                                rank,
+                                                train_config,
+                                                checkpoint_name=checkpoint_name)
+                                        dist.barrier()
+                                elif train_config.enable_ddp:
+                                    if rank == 0:
+                                        filename = save_model_checkpoint_peft(
+                                            model,
+                                            optimizer,
+                                            rank,
+                                            train_config,
+                                            checkpoint_name=checkpoint_name)
+                                    dist.barrier()
+                                else:
+                                    # model.save_pretrained(train_config.output_dir)
+                                    filename = save_model_checkpoint_peft(
+                                        model,
+                                        optimizer,
+                                        rank,
+                                        train_config,
+                                        checkpoint_name=checkpoint_name)
+
+                                if train_config.enable_fsdp or train_config.enable_ddp:
+                                    if rank == 0:
+                                        logger.info(
+                                            f"PEFT modules are saved in {train_config.output_dir} directory"
+                                        )
+                                else:
+                                    logger.info(
+                                        f"PEFT modules are saved in {train_config.output_dir} directory"
+                                    )
+
+                            # save trainable model checkpoint
+                            elif not train_config.use_peft and train_config.freeze_llm:
+                                if train_config.enable_fsdp or train_config.enable_ddp:
+                                    if rank == 0:
+                                        logger.info(f"llm is frozen, we are about to save other parts.")
+                                else:
+                                    logger.info(f"llm is frozen, we are about to save other parts.")
+                                
+                                if train_config.enable_fsdp:
+                                    if fsdp_config.sharding_strategy == ShardingStrategy.FULL_SHARD:
+                                        filename = save_model_checkpoint_peft_full_shard(
+                                            model,
+                                            optimizer,
+                                            rank,
+                                            train_config,
+                                            epoch=epoch)
+                                    elif fsdp_config.sharding_strategy == ShardingStrategy.NO_SHARD:
+                                        if rank == 0:
+                                            filename = save_model_checkpoint_peft(
+                                                model,
+                                                optimizer,
+                                                rank,
+                                                train_config,
+                                                checkpoint_name=checkpoint_name)
+                                        dist.barrier()
+                                elif train_config.enable_ddp:
+                                    if rank == 0:
+                                        filename = save_model_checkpoint_peft(
+                                            model,
+                                            optimizer,
+                                            rank,
+                                            train_config,
+                                            checkpoint_name=checkpoint_name)
+                                    dist.barrier()
+                                else:
+                                    filename = save_model_checkpoint_peft(
+                                        model,
+                                        optimizer,
+                                        rank,
+                                        train_config,
+                                        checkpoint_name=checkpoint_name)
+
+                            # save entire model checkpoint
+                            else:
+                                if train_config.enable_fsdp:
+                                    if getattr(StateDictType,
+                                            fsdp_config.checkpoint_type
+                                            ) == StateDictType.FULL_STATE_DICT:
+                                        save_model_checkpoint(model,
+                                                            optimizer,
+                                                            rank,
+                                                            train_config,
+                                                            epoch=epoch)
+
+                                    elif getattr(
+                                            StateDictType,
+                                            fsdp_config.checkpoint_type
+                                    ) == StateDictType.SHARDED_STATE_DICT:
+                                        save_model_and_optimizer_sharded(
+                                            model, rank, train_config)
+                                        logger.info(
+                                            " Saving the FSDP model checkpoints using SHARDED_STATE_DICT"
+                                        )
+                                        logger.info(
+                                            "====================================================="
+                                        )
+
+                                        if train_config.save_optimizer:
+                                            save_model_and_optimizer_sharded(
+                                                model,
+                                                rank,
+                                                train_config,
+                                                optim=optimizer)
+                                            logger.info(
+                                                " Saving the FSDP model checkpoints and optimizer using SHARDED_STATE_DICT"
+                                            )
+                                            logger.info(
+                                                "====================================================="
+                                            )
 
                                     if train_config.save_optimizer:
-                                        save_model_and_optimizer_sharded(model, rank, train_config, optim=optimizer)
-                                        logger.info(" Saving the FSDP model checkpoints and optimizer using SHARDED_STATE_DICT")
-                                        logger.info("=====================================================")
+                                        save_optimizer_checkpoint(
+                                            model,
+                                            optimizer,
+                                            rank,
+                                            train_config,
+                                            epoch=epoch_end_time)
+                                        logger.info(
+                                            " Saving the FSDP model checkpoints and optimizer using FULL_STATE_DICT"
+                                        )
+                                        logger.info(
+                                            "====================================================="
+                                        )
 
-                                if train_config.save_optimizer:
-                                    save_optimizer_checkpoint(model, optimizer, rank, train_config, epoch=epoch_end_time)
-                                    logger.info( " Saving the FSDP model checkpoints and optimizer using FULL_STATE_DICT")
-                                    logger.info("=====================================================")
+                                elif train_config.enable_ddp:
+                                    if rank == 0:
+                                        filename = save_model_checkpoint_peft(
+                                            model,
+                                            optimizer,
+                                            rank,
+                                            train_config,
+                                            checkpoint_name=checkpoint_name)
+                                    dist.barrier()
 
-                            elif train_config.enable_ddp:
+                                else:
+                                    filename = save_model_checkpoint_peft(
+                                        model,
+                                        optimizer,
+                                        rank,
+                                        train_config,
+                                        checkpoint_name=checkpoint_name)
+
+                            
+                            
+                            if train_config.enable_fsdp or train_config.enable_ddp:
                                 if rank == 0:
-                                    filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
+                                    if management == "acc":
+                                        filename_list.append([eval_epoch_acc, filename])
+                                    elif management == "loss":
+                                        filename_list.append([eval_epoch_loss, filename])
+                                    else:
+                                        raise ValueError(
+                                            f"Unknown management type: {management}")
+                            else:
+                                if management == "acc":
+                                    filename_list.append([eval_epoch_acc, filename])
+                                elif management == "loss":
+                                    filename_list.append([eval_epoch_loss, filename])
+                                else:
+                                    raise ValueError(
+                                        f"Unknown management type: {management}")
+                            
+                            
+                            if train_config.enable_fsdp or train_config.enable_ddp:
                                 dist.barrier()
 
+                            if train_config.enable_fsdp or train_config.enable_ddp:
+                                if rank == 0:
+                                    logging.info(f'Checkpoint saved to {filename}')
                             else:
-                                filename = save_model_checkpoint_peft(model, optimizer, rank, train_config, checkpoint_name=checkpoint_name)
-
-                        if train_config.enable_fsdp or train_config.enable_ddp:
-                            dist.barrier()
-
-
-                        logging.info(f'Checkpoint saved to {filename}')
-
+                                logging.info(f'Checkpoint saved to {filename}')
 
                     checkpoint_end_time = time.perf_counter() - checkpoint_start_time
                     checkpoint_times.append(checkpoint_end_time)
@@ -341,9 +537,13 @@ def train(model,
                         best_val_loss = eval_epoch_loss
                         if train_config.enable_fsdp or train_config.enable_ddp:
                             if rank == 0:
-                                logger.info(f"best eval loss on epoch {epoch+1} is {best_val_loss} save as {filename}")
+                                logger.info(
+                                    f"best eval loss on epoch {epoch+1} is {best_val_loss} save as {filename}"
+                                )
                         else:
-                            logger.info(f"best eval loss on epoch {epoch+1} is {best_val_loss} save as {filename}")
+                            logger.info(
+                                f"best eval loss on epoch {epoch+1} is {best_val_loss} save as {filename}"
+                            )
 
                     val_loss.append(eval_epoch_loss)
                     val_prep.append(eval_ppl)
@@ -352,9 +552,13 @@ def train(model,
                             best_val_acc = eval_epoch_acc
                             if train_config.enable_fsdp or train_config.enable_ddp:
                                 if rank == 0:
-                                    logger.info(f"best eval acc on epoch {epoch+1} is {best_val_acc}")
+                                    logger.info(
+                                        f"best eval acc on epoch {epoch+1} is {best_val_acc}"
+                                    )
                             else:
-                                logger.info(f"best eval acc on epoch {epoch+1} is {best_val_acc}")
+                                logger.info(
+                                    f"best eval acc on epoch {epoch+1} is {best_val_acc}"
+                                )
                         val_acc.append(rest[0])
                     else:
                         val_acc.append(-1)
@@ -454,7 +658,9 @@ def train(model,
                     f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s"
                 )
         else:
-            logger.info(f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s")
+            logger.info(
+                f"Epoch {epoch+1}: train_perplexity={train_perplexity:.4f}, train_epoch_loss={train_epoch_loss:.4f}, epoch time {epoch_end_time}s"
+            )
 
         if train_config.enable_fsdp:
             if rank == 0:
@@ -484,6 +690,13 @@ def train(model,
 
         # Update the learning rate as needed
         # lr_scheduler.step()
+
+    device = next(model.parameters()).device
+    if device.type == "cuda":
+        with torch.cuda.device(device):
+            torch.cuda.empty_cache()
+            if rank == 0:
+                logger.info(f"Clearing GPU cache for all ranks")
 
     avg_epoch_time = sum(epoch_times) / len(epoch_times)
     avg_checkpoint_time = sum(checkpoint_times) / len(checkpoint_times) if len(

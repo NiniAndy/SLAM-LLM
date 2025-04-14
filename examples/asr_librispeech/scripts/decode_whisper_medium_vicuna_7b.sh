@@ -14,8 +14,8 @@ echo "Project dir: $project_dir"
 speech_encoder_path=/ssd/zhuang/code/LLM/whisper/medium.pt
 llm_path=/ssd/zhuang/code/LLM/vicuna-7b-v.15
 
-output_dir=/ssd/zhuang/code/SLAM-LLM/examples/asr_librispeech/exp/vicuna-7b-v1.5-librispeech-linear-steplrwarmupkeep1e-4-whisper-medium-20250315
-ckpt_path=$output_dir/asr_epoch_2_step_67423
+output_dir=/ssd/zhuang/code/SLAM-LLM/examples/asr_librispeech/exp/whisper-medium-linear-vicuna-7b-v1_5-ls960-20250319/
+ckpt_path=$output_dir/model
 split=test_clean
 val_data_path=/ssd/zhuang/code/FunASR/examples/librispeech/DATA/data/${split}/audio_datasets.jsonl
 decode_log=$ckpt_path/decode_${split}_beam4
@@ -47,7 +47,7 @@ python $code_dir/inference_asr_batch.py \
         ++train_config.num_workers_dataloader=2 \
         ++train_config.output_dir=$output_dir \
         ++decode_log=$decode_log \
-        ++ckpt_path=$ckpt_path/model.pt \
+        ++ckpt_path=$ckpt_path/asr_epoch_2_step_46423.pt \
         # ++peft_ckpt=$ckpt_path \
         # ++train_config.use_peft=true \
         # ++train_config.peft_config.r=32 \

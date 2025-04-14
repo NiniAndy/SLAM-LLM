@@ -6,7 +6,7 @@ from torch.distributed.fsdp import ShardingStrategy
 
 @dataclass
 class ModelConfig:
-    file: str = "examples/asr_librispeech/model/slam_model_asr.py:model_factory"
+    file: str = "/ssd/zhuang/code/SLAM-LLM/examples/asr_librispeech/model/slam_model_asr.py:model_factory"
     llm_name: str = "vicuna-13b-v1.5"
     llm_path: str = "PATH/to/LLAMA/7B"
     llm_type: str = "decoder_only"
@@ -97,7 +97,7 @@ class TrainConfig:
 @dataclass
 class DataConfig:
     dataset: str = "speech_dataset"
-    file: str = "src/slam_llm/datasets/speech_dataset.py:get_speech_dataset"
+    file: str = "/ssd/zhuang/code/SLAM-LLM/src/slam_llm/datasets/speech_dataset.py:get_speech_dataset"
     train_data_path: Optional[str] = None
     val_data_path: Optional[str] = None
     train_split: str = "train"

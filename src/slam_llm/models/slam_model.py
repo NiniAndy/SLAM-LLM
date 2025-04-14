@@ -228,6 +228,9 @@ def setup_encoder_projector(train_config, model_config, **kwargs):
     elif model_config.encoder_projector == "q-former":
         from slam_llm.models.projector import EncoderProjectorQFormer
         encoder_projector = EncoderProjectorQFormer(model_config)
+    elif model_config.encoder_projector == "seg-QF":
+        from slam_llm.models.projector import EncoderProjectorSegQF
+        encoder_projector = EncoderProjectorSegQF(model_config)
     else:
         return None
     print_module_size(encoder_projector, model_config.encoder_projector, int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
@@ -355,6 +358,8 @@ class slam_model(nn.Module):
                 encoder_outs = self.encoder_projector(encoder_outs)
             if self.model_config.encoder_projector == "cov1d-linear": 
                 encoder_outs = self.encoder_projector(encoder_outs) 
+            if self.model_config.encoder_projector == "seg-QF":
+                encoder_outs = self.encoder_projector(encoder_outs)
 
         if instruct_ids is not None:
             if self.encoder is not None:

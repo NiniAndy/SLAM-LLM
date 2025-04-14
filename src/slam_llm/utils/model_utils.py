@@ -1,5 +1,6 @@
 from slam_llm.utils.dataset_utils import load_module_from_py_file
 from pathlib import Path
+import os
 
 def get_custom_model_factory(model_config, logger):
     costom_model_path = model_config.get(
@@ -16,6 +17,11 @@ def get_custom_model_factory(model_config, logger):
 
     if not module_path.endswith(".py"):
         raise ValueError(f"Dataset file {module_path} is not a .py file.")
+    
+    # 判断module_path是否是绝对路径
+    if not Path(module_path).is_absolute():
+        root = "/ssd/zhuang/code/SLAM-LLM"
+        module_path = os.path.join(root, module_path)
     
     module_path = Path(module_path)
     if not module_path.is_file():

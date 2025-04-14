@@ -1,0 +1,90 @@
+#!/bin/bash
+root=/ssd/zhuang/code
+# export PYTHONPATH=/root/whisper:$PYTHONPATH
+export PYTHONPATH=$root/fairseq:$PYTHONPATH
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export TOKENIZERS_PARALLELISM=false
+# export CUDA_LAUNCH_BLOCKING=1
+export OMP_NUM_THREADS=1
+
+# debug setting for multiple gpus
+# export NCCL_DEBUG=INFO
+# export NCCL_DEBUG_SUBSYS=ALL
+# export TORCH_DISTRIBUTED_DEBUG=INFO
+
+run_dir=$root/SLAM-LLM
+cd $run_dir
+code_dir=examples/asr_librispeech
+project_dir=$run_dir/$code_dir
+echo "Project dir: $project_dir"
+export TORCH_ELASTIC_ERROR_FILE=$project_dir/torch_error.log
+
+
+speech_encoder_path=/ssd/zhuang/code/LLM/whisper/medium.pt
+llm_path=/ssd/zhuang/code/LLM/vicuna-7b-v.15
+train_data_path=/ssd/zhuang/code/FunASR/examples/asru2019/DATA/train200/audio_datasets.jsonl
+val_data_path=/ssd/zhuang/code/FunASR/examples/asru2019/DATA/test/audio_datasets.jsonl
+
+output_dir=$project_dir/exp
+mkdir -p "${output_dir}"
+output_dir=$output_dir/whisper-medium-linear-vicuna7b-v1_5-asru2019-$(date +"%Y%m%d")
+echo "Save path: $output_dir"
+
+
+hydra_args="
+hydra.run.dir=$output_dir \
+++model_config.llm_name=vicuna-7b-v1.5 \
+++model_config.llm_path=$llm_path \
+++model_config.llm_dim=4096 \
+++model_config.encoder_name=whisper \
+++model_config.encoder_projector_ds_rate=5 \
+++model_config.encoder_path=$speech_encoder_path \
+++model_config.encoder_dim=1024 \
+++model_config.encoder_projector=linear \
+++dataset_config.train_data_path=$train_data_path \
+++dataset_config.val_data_path=$val_data_path \
+++dataset_config.input_type=mel \
+++dataset_config.mel_size=80 \
+++train_config.model_name=asr \
+++train_config.num_epochs=5 \
+++train_config.freeze_encoder=true \
+++train_config.freeze_llm=true \
+++train_config.batching_strategy=custom \
+++train_config.warmup_steps=1000 \
+++train_config.total_steps=150000 \
+++train_config.lr=1e-4 \
+++train_config.validation_interval=4000 \
+++train_config.batch_size_training=1 \
+++train_config.val_batch_size=1 \
+++train_config.gradient_accumulation_steps=4 \
+++train_config.num_workers_dataloader=4 \
+++train_config.output_dir=$output_dir \
+++log_config.log_file=$output_dir/log.txt \
+++log_config.log_interval=500 \
+++metric=acc \
+"
+
+# ++dataset_config.dataset=speech_dataset_MsCnEn \
+# ++dataset_config.file=/ssd/zhuang/code/SLAM-LLM/src/slam_llm/datasets/speech_dataset_MsCnEn.py:get_speech_dataset_MsCnEn \
+
+# -m debugpy --listen 5678 --wait-for-client
+if [[ $CUDA_VISIBLE_DEVICES != *","* ]]; then
+    python -m debugpy --listen 5678 --wait-for-client $code_dir/finetune_asr.py \
+        --config-path "conf" \
+        --config-name "prompt.yaml" \
+        $hydra_args
+else
+    torchrun \
+        --nnodes 1 \
+        --nproc_per_node 4 \
+        --master_port=29503 \
+        $code_dir/finetune_asr.py \
+        --config-path "conf" \
+        --config-name "prompt.yaml" \
+        ++dataset_config.prompt="Transcribe latent Chinese and English speech to code-switch text. " \
+        ++train_config.enable_fsdp=false \
+        ++train_config.enable_ddp=true \
+        ++train_config.enable_fsdp=false \
+        ++train_config.use_fp16=true \
+        $hydra_args
+fi
