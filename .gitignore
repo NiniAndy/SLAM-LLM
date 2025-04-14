@@ -230,3 +230,4 @@ examples/asr_librispeech/exp/whisper-medium-qformer-vicuna-7b-v1_5-ls960-2025032
 examples/asr_librispeech/exp/whisper-medium-qformer-vicuna-7b-v1_5-ls960-20250320/model/.hydra/hydra.yaml
 examples/asr_librispeech/exp/whisper-medium-qformer-vicuna-7b-v1_5-ls960-20250320/model/.hydra/overrides.yaml
 examples/asr_librispeech/exp/whisper-large-linear-qwen-v2_5-3B-mixcs-20250413/asr_epoch_1_step_48000.pt
+examples/asr_librispeech/exp/whisper-large-linear-qwen-v2_5-3B-mixcs-20250413/asr_epoch_1_step_52000.pt
