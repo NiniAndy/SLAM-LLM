@@ -16,9 +16,6 @@ from slam_llm.datasets.speech_dataset import classify_en_cn
 
 
 class Phoneme2TextDatasetJsonl(torch.utils.data.Dataset):
-    '''
-    手工合成EN-CN code switching数据集
-    '''
 
     def __init__(self,
                  dataset_config,
