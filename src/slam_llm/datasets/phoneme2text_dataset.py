@@ -31,7 +31,7 @@ class Phoneme2TextDatasetJsonl(torch.utils.data.Dataset):
 
         # self.data_list = contents
         self.IGNORE_INDEX = -100  # The default setting in CrossEntropyLoss
-        self.prompt = dataset_config.get("prompt", None)
+        # self.prompt = dataset_config.get("prompt", None)
         self.prompt = "You are a speech recognition model. Transcribe English-Chinese code switch according to pronunciation into text without any punctuation marks. "
 
      
@@ -58,6 +58,27 @@ class Phoneme2TextDatasetJsonl(torch.utils.data.Dataset):
                     data_dict = json.loads(line.strip())
                     self.data_list.append(data_dict)
 
+        self.max_cat_num = 3
+        self.cat_prob = 0.7
+
+        libri_test_path = "/ssd/zhuang/code/FunASR/examples/librispeech/DATA/data/test_clean/audio_datasets.jsonl"
+        self.en_data = []
+        with open(libri_test_path, 'r') as f:
+            for line in f:
+                # 将每一行解析为字典并添加到列表中
+                dic = json.loads(line)
+                dic["text_language"] = "en"
+                self.en_data.append(dic)
+
+        self.zh_data = []
+        aishell_test_path = "/ssd/zhuang/code/FunASR/examples/aishell2/DATA/data/test/IOS/audio_datasets.jsonl"
+        with open(aishell_test_path, 'r') as f:
+            for line in f:
+                # 将每一行解析为字典并添加到列表中
+                dic = json.loads(line)
+                dic["text_language"] = "zh"
+                self.zh_data.append(dic)
+
 
     def get_source_len(self, data_dict):
         return data_dict["source_len"]
@@ -73,6 +94,24 @@ class Phoneme2TextDatasetJsonl(torch.utils.data.Dataset):
         target = data_dict.get("target", None)
         task = data_dict.get("prompt", "Phoneme2Text")
         key = data_dict.get("key", None)
+        current_text_language = data_dict.get("text_language", None)
+
+        cat_num = 0
+        if self.split == "train":
+            whether_cat = random.random()
+            while whether_cat < self.cat_prob and cat_num < self.max_cat_num and current_text_language is not None:
+                if current_text_language == "en":
+                    data = self.zh_data
+                else:
+                    data = self.en_data
+                add_id = random.randint(0, len(data)- 1)
+                add_item = data[add_id]
+                add_target = add_item["target"]
+                current_text_language = add_item.get("text_language", None)
+                target = target + " " + add_target
+                cat_num += 1
+                whether_cat = random.random()
+    
 
         text = classify_en_cn(target)
         output = ''
@@ -80,8 +119,7 @@ class Phoneme2TextDatasetJsonl(torch.utils.data.Dataset):
         for language, txt in text:
             regular_target += txt
             phone, _ = self.phonme_tokenizer.tokenize(txt, text_language=language)
-            if output != '':
-                output += '|'
+            output += f' <{language}> '
             output += phone
 
         instruct = output.replace('|', '') + ". "

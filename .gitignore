@@ -242,3 +242,7 @@ examples/asr_librispeech/exp/whisper-large-linear-qwen-v2_5-3B-mixcs-20250413/as
 examples/asr_librispeech/exp/whisper-large-linear-qwen-v2_5-3B-mixcs-20250413/asr_epoch_1_step_68000.pt
 examples/asr_librispeech/exp/whisper-large-linear-qwen-v2_5-3B-mixcs-20250413/asr_epoch_1_step_72000.pt
 examples/asr_librispeech/exp/whisper-large-linear-qwen-v2_5-3B-mixcs-20250413/asr_epoch_1_step_76000.pt
+examples/phoneme_llm/exp/qwen-v2_5-3B-mixcs-20250416/log.txt
+examples/phoneme_llm/exp/qwen-v2_5-3B-mixcs-20250416/.hydra/config.yaml
+examples/phoneme_llm/exp/qwen-v2_5-3B-mixcs-20250416/.hydra/hydra.yaml
+examples/phoneme_llm/exp/qwen-v2_5-3B-mixcs-20250416/.hydra/overrides.yaml
